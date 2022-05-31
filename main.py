@@ -175,7 +175,8 @@ async def settings_query(msg):
         await bot.send_message(msg.chat.id, "Number must be between 1 and 10")
         return
     await bot.add_data(msg.from_user.id, confirmations=confirmations)
-
+    await bot.set_state(msg.from_user.id, "menu")
+    await bot.send_message(msg.chat.id, "Success", reply_markup=keyboards["menu"])
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "set_new_wallet", state="menu")
