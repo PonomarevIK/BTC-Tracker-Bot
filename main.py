@@ -24,19 +24,21 @@ icons = {
     "cancel": "🔙",
     "start_tracking": "🔔",
     "stop_tracking": "🔕",
+    "settings": "🔧"
 }
 btns = {
     "wallet": telebot.types.KeyboardButton("💼 BTC Wallet"),
     "cancel": telebot.types.KeyboardButton("🔙 Cancel"),
-    "start_tracking": telebot.types.KeyboardButton("🔔 TX tracking on"),
-    "stop_tracking": telebot.types.KeyboardButton("🔕 TX tracking off"),
+    "start_tracking": telebot.types.KeyboardButton("🔔 Transaction tracking on"),
+    "stop_tracking": telebot.types.KeyboardButton("🔕 Transaction tracking off"),
+    "settings": telebot.types.KeyboardButton("🔧 Settings"),
     "set_wallet": telebot.types.InlineKeyboardButton("Set new wallet", callback_data="set_new_wallet"),
     "check_balance": telebot.types.InlineKeyboardButton("Check balance", callback_data="check_balance"),
 }
 keyboards = {
-    "menu": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1).add(btns["wallet"], btns["start_tracking"]),
+    "menu": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(btns["wallet"], btns["settings"], btns["start_tracking"]),
     "tracking": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True).add(btns["stop_tracking"]),
-    "wallet_query": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True).add(btns["cancel"]),
+    "query": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True).add(btns["cancel"]),
     "set_wallet": telebot.types.InlineKeyboardMarkup(row_width=1).add(btns["set_wallet"], btns["check_balance"])
 }
 
@@ -57,7 +59,7 @@ async def get_block_height() -> int:
     return int(wallet_request)
 
 
-async def tracker(chat_id, user_id, wallet):
+async def tracker(chat_id, user_id, wallet, required_confirmations):
     """Accesses blockchain.info API in a loop to check for updates on the last transaction on user's wallet"""
     if (wallet_info := await get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")) is None:
         await bot.send_message(chat_id, text="Could not reach blockchain.info API", reply_markup=keyboards["menu"])
@@ -85,7 +87,7 @@ async def tracker(chat_id, user_id, wallet):
             continue
 
         prev_confirmations = confirmations
-        if confirmations >= 2:
+        if confirmations >= required_confirmations:
             await bot.send_message(chat_id, text="Transaction confirmed!", reply_markup=keyboards["menu"])
             await bot.set_state(user_id, "menu")
             return
@@ -128,6 +130,11 @@ async def btn_wallet(msg):
             response = f"BTC Wallet:\n{wallet}"
     await bot.send_message(msg.chat.id, text=response, reply_markup=keyboards["set_wallet"])
 
+@bot.message_handler(text_startswith=icons["settings"])
+async def btn_settings(msg):
+    await bot.send_message(msg.chat.id, text="Default number of required confirmations is 2\nEnter a number between 1 and 10 to change that", reply_markup=keyboards["query"])
+    await bot.set_state(msg.from_user.id, "settings_query")
+
 
 @bot.message_handler(text_startswith=icons["start_tracking"], state="menu")
 async def btn_start_tracking(msg):
@@ -135,9 +142,10 @@ async def btn_start_tracking(msg):
         if data is None or (wallet := data.get("wallet")) is None:
             await bot.send_message(msg.chat.id, text="No wallet")
             return
+        confirmations = data.get("confirmations") or 2
     await bot.set_state(msg.from_user.id, "tracking")
     await bot.send_message(msg.chat.id, text="Looking for unconfirmed transactions...", reply_markup=keyboards["tracking"])
-    await tracker(msg.chat.id, msg.from_user.id, wallet)
+    await tracker(msg.chat.id, msg.from_user.id, wallet, confirmations)
 
 
 @bot.message_handler(text_startswith=icons["stop_tracking"])
@@ -157,9 +165,22 @@ async def wallet_query(msg):
         await bot.send_message(msg.chat.id, text="Not a valid BTC wallet")
 
 
+@bot.message_handler(state="settings_query")
+async def settings_query(msg):
+    if not msg.text.isdigit():
+        await bot.send_message(msg.chat.id, "Invalid input")
+        return
+    confirmations = int(msg.text)
+    if confirmations not in range(1, 11):
+        await bot.send_message(msg.chat.id, "Number must be between 1 and 10")
+        return
+    await bot.add_data(msg.from_user.id, confirmations=confirmations)
+
+
+
 @bot.callback_query_handler(func=lambda call: call.data == "set_new_wallet", state="menu")
 async def btn_set_wallet(call):
-    await bot.send_message(call.message.chat.id, text="Enter new wallet", reply_markup=keyboards["wallet_query"])
+    await bot.send_message(call.message.chat.id, text="Enter new wallet", reply_markup=keyboards["query"])
     await bot.set_state(call.from_user.id, "wallet_query")
 
 
@@ -178,7 +199,7 @@ async def check_balance(call):
 @bot.message_handler(func=lambda msg: True)
 async def delete_unrecognized(msg):
     await bot.set_state(msg.from_user.id, "menu")
-    await bot.send_message(msg.chat.id, text="Invalid command in this context\nGoing back to menu...",
+    await bot.send_message(msg.chat.id, text="Invalid command/value\nGoing back to menu...",
                            reply_markup=keyboards["menu"])
 
 
