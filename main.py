@@ -106,12 +106,12 @@ async def welcome(msg):
     await bot.send_message(msg.chat.id, text="Hello", reply_markup=keyboards["menu"])
 
 
-@bot.message_handler(commands=["debug"])
-async def debug(msg):
-    async with bot.retrieve_data(msg.from_user.id) as data:
-        state = await bot.get_state(msg.from_user.id)
-        print(f"DEBUG INFO\nUser state: {state}\nUser Data: {data}")
-    await bot.delete_message(msg.chat.id, msg.message_id)
+# @bot.message_handler(commands=["debug"])
+# async def debug(msg):
+#     async with bot.retrieve_data(msg.from_user.id) as data:
+#         state = await bot.get_state(msg.from_user.id)
+#         print(f"DEBUG INFO\nUser state: {state}\nUser Data: {data}")
+#     await bot.delete_message(msg.chat.id, msg.message_id)
 
 
 @bot.message_handler(text_startswith=icons["cancel"])
@@ -120,7 +120,7 @@ async def btn_cancel(msg):
     await bot.send_message(msg.chat.id, text=icons["cancel"], reply_markup=keyboards["menu"])
 
 
-@bot.message_handler(text_startswith=icons["wallet"])
+@bot.message_handler(text_startswith=icons["wallet"], state="menu")
 async def btn_wallet(msg):
     async with bot.retrieve_data(msg.from_user.id) as data:
         if data is None or (wallet := data.get("wallet")) is None:
@@ -136,12 +136,8 @@ async def btn_wallet(msg):
     await bot.send_message(msg.chat.id, text=response, reply_markup=keyboards["set_wallet"])
 
 
-@bot.message_handler(text_startswith=icons["start_tracking"])
+@bot.message_handler(text_startswith=icons["start_tracking"], state="menu")
 async def btn_start_tracking(msg):
-    if await bot.get_state(msg.from_user.id) != "menu":
-        await bot.send_message(msg.chat.id, text="Another action is being executed.\nReturning to main menu.", reply_markup=keyboards["menu"])
-        await bot.set_state(msg.from_user.id, "menu")
-        return
     async with bot.retrieve_data(msg.from_user.id) as data:
         if data.get("wallet") is None:
             await bot.send_message(msg.chat.id, text="No wallet")
@@ -180,20 +176,16 @@ async def set_new_wallet(msg):
         await bot.send_message(msg.chat.id, text="Not a valid BTC wallet")
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "set_new_wallet")
+@bot.callback_query_handler(func=lambda call: call.data == "set_new_wallet", state="menu")
 async def set_new_wallet_button(call):
-    if await bot.get_state(call.from_user.id) != "menu":
-        await bot.send_message(call.message.chat.id, text="Another action is being executed.\nReturning to main menu.", reply_markup=keyboards["menu"])
-        await bot.set_state(call.from_user.id, "menu")
-        return
     await bot.send_message(call.message.chat.id, text="Enter new wallet address", reply_markup=keyboards["wallet_query"])
     await bot.set_state(call.from_user.id, "wallet_query")
 
 
 @bot.message_handler(func=lambda msg: True)
 async def delete_unrecognized(msg):
-    if await bot.get_state(msg.from_user.id) is None:
-        await bot.set_state(msg.from_user.id, "menu")
+    await bot.set_state(msg.from_user.id, "menu")
+    await bot.send_message(msg.chat.id, text="Invalid command in this context", reply_markup=keyboards["menu"])
     await bot.delete_message(msg.chat.id, msg.message_id)
 
 
