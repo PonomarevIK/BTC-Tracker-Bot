@@ -74,25 +74,25 @@ async def tracker(chat_id, user_id, wallet):
     await bot.send_message(chat_id, text=f"Unconfirmed transaction {tx_hash} found")
 
     while await bot.get_state(user_id) == "tracking":
-        if (tx_info := await get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
-            pass
-
-        elif (tx_block_height := tx_info["block_height"]) is None:
-            pass
-
-        elif (confirmations := await get_block_height() - tx_block_height + 1) == prev_confirmations:
-            pass
-
-        else:
-            prev_confirmations = confirmations
-            if confirmations >= 2:
-                await bot.send_message(chat_id, text="Transaction confirmed!", reply_markup=keyboards["menu"])
-                await bot.set_state(user_id, "menu")
-                return
-            else:
-                await bot.send_message(chat_id, f"Confirmations: {confirmations}")
-
         await asyncio.sleep(20)
+
+        if (tx_info := await get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
+            continue
+        if (tx_block_height := tx_info["block_height"]) is None:
+            continue
+        await asyncio.sleep(10)
+        if (confirmations := await get_block_height() - tx_block_height + 1) == prev_confirmations:
+            continue
+
+        prev_confirmations = confirmations
+        if confirmations >= 2:
+            await bot.send_message(chat_id, text="Transaction confirmed!", reply_markup=keyboards["menu"])
+            await bot.set_state(user_id, "menu")
+            return
+        else:
+            await bot.send_message(chat_id, f"Confirmations: {confirmations}")
+
+
 
     await bot.send_message(chat_id, text="Transaction tracking cancelled", reply_markup=keyboards["menu"])
 
@@ -152,14 +152,14 @@ async def wallet_query(msg):
     if re.fullmatch(r"^([13]{1}[a-km-zA-HJ-NP-Z1-9]{26,33}|bc1[a-z0-9]{39,59})$", wallet_address):
         await bot.add_data(msg.from_user.id, wallet=wallet_address)
         await bot.set_state(msg.from_user.id, "menu")
-        await bot.send_message(msg.chat.id, text="BTC wallet address updated", reply_markup=keyboards["menu"])
+        await bot.send_message(msg.chat.id, text="BTC wallet updated", reply_markup=keyboards["menu"])
     else:
         await bot.send_message(msg.chat.id, text="Not a valid BTC wallet")
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "set_new_wallet", state="menu")
 async def btn_set_wallet(call):
-    await bot.send_message(call.message.chat.id, text="Enter new wallet address", reply_markup=keyboards["wallet_query"])
+    await bot.send_message(call.message.chat.id, text="Enter new wallet", reply_markup=keyboards["wallet_query"])
     await bot.set_state(call.from_user.id, "wallet_query")
 
 
