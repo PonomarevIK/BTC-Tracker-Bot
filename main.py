@@ -39,6 +39,11 @@ keyboards = {
     "wallet_query": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True).add(btns["cancel"]),
     "set_wallet": telebot.types.InlineKeyboardMarkup().add(btns["set_wallet"])
 }
+request_urls = {
+    "block count": "https://blockchain.info/q/getblockcount",
+    "wallet info": "https://blockchain.info/rawaddr/{wallet}?limit=1",
+    "transaction info": "https://blockchain.info/rawtx/{hash}"
+}
 
 
 async def get_json_response(url):
@@ -53,13 +58,13 @@ async def get_json_response(url):
 
 async def get_block_height() -> int:
     """Returns index of the newest block on the blockchain"""
-    wallet_request = await get_json_response("https://blockchain.info/q/getblockcount")
+    wallet_request = await get_json_response(request_urls["block count"])
     return int(wallet_request)
 
 
 async def tracker(chat_id, user_id, wallet):
     """Acesses blockchain.info API in a loop for updates on a specified transaction"""
-    if (wallet_info := await get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")) is None:
+    if ( wallet_info := await get_json_response(request_urls["wallet info"].format(wallet=wallet)) ) is None:
         await bot.send_message(chat_id, text="Could not reach blockchain.info API", reply_markup=keyboards["menu"])
         await bot.set_state(user_id, "menu")
         return
@@ -74,7 +79,7 @@ async def tracker(chat_id, user_id, wallet):
         await bot.send_message(chat_id, text=f"Unconfirmed transaction {tx_hash} found")
 
         while await bot.get_state(user_id) == "tracking":
-            if (tx_info := await get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
+            if ( tx_info := await get_json_response(request_urls["transaction info"].format(tx_hash=tx_hash)) ) is None:
                 pass
             elif (tx_block_height := tx_info["block_height"]) is None:
                 pass
@@ -122,7 +127,7 @@ async def btn_wallet(msg):
             response = "BTC wallet is not set"
         else:
             response = f"BTC Wallet:\n{wallet}\n\n"
-            if (wallet_info_request := await get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")) is None:
+            if ( wallet_info_request := await get_json_response(request_urls["wallet info"].format(wallet=wallet)) ) is None:
                 response += "Could not find wallet info online"
             else:
                 wallet_info = wallet_info_request.json()
