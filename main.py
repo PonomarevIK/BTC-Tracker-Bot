@@ -42,6 +42,7 @@ keyboards = {
 
 
 async def get_json_response(url):
+    """Asyncronously connects to a specified URL and returns a json response on success or None otherwise"""
     async with httpx.AsyncClient() as client:
         request = await client.get(url)
     if request.status_code == httpx.codes.OK:
@@ -51,16 +52,19 @@ async def get_json_response(url):
 
 
 async def get_block_height() -> int:
+    """Returns index of the newest block on the blockchain"""
     wallet_request = await get_json_response("https://blockchain.info/q/getblockcount")
     return int(wallet_request)
 
 
 async def tracker(chat_id, user_id, wallet):
+    """Acesses blockchain.info API in a loop for updates on a specified transaction"""
     if (wallet_info := await get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")) is None:
-        await bot.set_state(user_id, "menu")
         await bot.send_message(chat_id, text="Could not reach blockchain.info API", reply_markup=keyboards["menu"])
+        await bot.set_state(user_id, "menu")
         return
     last_tx = wallet_info["txs"][0]
+
     async with bot.retrieve_data(user_id) as data:
         required_confirmations = data.get["confirmations"] or 2
 
