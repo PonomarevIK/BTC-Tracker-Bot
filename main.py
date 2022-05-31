@@ -31,12 +31,13 @@ btns = {
     "start_tracking": telebot.types.KeyboardButton("🔔 TX tracking on"),
     "stop_tracking": telebot.types.KeyboardButton("🔕 TX tracking off"),
     "set_wallet": telebot.types.InlineKeyboardButton("Set new wallet", callback_data="set_new_wallet"),
+    "check_balance": telebot.types.InlineKeyboardButton("Check balance", callback_data="check_balance"),
 }
 keyboards = {
     "menu": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1).add(btns["wallet"], btns["start_tracking"]),
     "tracking": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True).add(btns["stop_tracking"]),
     "wallet_query": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True).add(btns["cancel"]),
-    "set_wallet": telebot.types.InlineKeyboardMarkup().add(btns["set_wallet"])
+    "set_wallet": telebot.types.InlineKeyboardMarkup(row_width=1).add(btns["set_wallet"], btns["check_balance"])
 }
 
 
@@ -64,34 +65,36 @@ async def tracker(chat_id, user_id, wallet):
         return
     last_tx = wallet_info["txs"][0]
 
-    if last_tx["block_height"] is None:
-        tx_hash = last_tx["hash"]
-        prev_confirmations = 0
-        await bot.send_message(chat_id, text=f"Unconfirmed transaction {tx_hash} found")
-
-        while await bot.get_state(user_id) == "tracking":
-            if (tx_info := await get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
-                pass
-
-            elif (tx_block_height := tx_info["block_height"]) is None:
-                pass
-
-            elif (confirmations := await get_block_height() - tx_block_height + 1) == prev_confirmations:
-                pass
-
-            else:
-                prev_confirmations = confirmations
-                if confirmations >= 2:
-                    await bot.send_message(chat_id, text="Transaction confirmed!", reply_markup=keyboards["menu"])
-                    await bot.set_state(user_id, "menu")
-
-                else:
-                    await bot.send_message(chat_id, f"Confirmations: {confirmations}")
-
-            await asyncio.sleep(20)
-    else:
+    if last_tx["block_height"] is not None:
         await bot.send_message(chat_id, text="No unconfirmed transactions found", reply_markup=keyboards["menu"])
         await bot.set_state(user_id, "menu")
+        return
+    tx_hash = last_tx["hash"]
+    prev_confirmations = 0
+    await bot.send_message(chat_id, text=f"Unconfirmed transaction {tx_hash} found")
+
+    while await bot.get_state(user_id) == "tracking":
+        if (tx_info := await get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
+            pass
+
+        elif (tx_block_height := tx_info["block_height"]) is None:
+            pass
+
+        elif (confirmations := await get_block_height() - tx_block_height + 1) == prev_confirmations:
+            pass
+
+        else:
+            prev_confirmations = confirmations
+            if confirmations >= 2:
+                await bot.send_message(chat_id, text="Transaction confirmed!", reply_markup=keyboards["menu"])
+                await bot.set_state(user_id, "menu")
+                return
+            else:
+                await bot.send_message(chat_id, f"Confirmations: {confirmations}")
+
+        await asyncio.sleep(20)
+
+    await bot.send_message(chat_id, text="Transaction tracking cancelled", reply_markup=keyboards["menu"])
 
 
 # MESSAGE HANDLERS
@@ -122,12 +125,7 @@ async def btn_wallet(msg):
         if data is None or (wallet := data.get("wallet")) is None:
             response = "BTC wallet is not set"
         else:
-            response = f"BTC Wallet:\n{wallet}\n\n"
-            if (wallet_info := await get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")) is None:
-                response += "Could not find wallet info online"
-            else:
-                response += f"Balance: {wallet_info['final_balance'] * 0.00000001}\n" \
-                            f"Transactions: {wallet_info['n_tx']}"
+            response = f"BTC Wallet:\n{wallet}"
     await bot.send_message(msg.chat.id, text=response, reply_markup=keyboards["set_wallet"])
 
 
@@ -145,7 +143,7 @@ async def btn_start_tracking(msg):
 @bot.message_handler(text_startswith=icons["stop_tracking"])
 async def btn_stop_tracking(msg):
     await bot.set_state(msg.from_user.id, "menu")
-    await bot.send_message(msg.chat.id, text="TX tracking cancelled", reply_markup=keyboards["menu"])
+    await bot.send_message(msg.chat.id, text="Please wait...", reply_markup=telebot.types.ReplyKeyboardRemove())
 
 
 @bot.message_handler(state="wallet_query")
@@ -163,6 +161,18 @@ async def wallet_query(msg):
 async def btn_set_wallet(call):
     await bot.send_message(call.message.chat.id, text="Enter new wallet address", reply_markup=keyboards["wallet_query"])
     await bot.set_state(call.from_user.id, "wallet_query")
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "check_balance", state="menu")
+async def check_balance(call):
+    async with bot.retrieve_data(call.from_user.id) as data:
+        wallet = data.get("wallet")
+    if (wallet_info := await get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")) is None:
+        response = "Could not find wallet info online"
+    else:
+        response = f"Balance: {wallet_info['final_balance'] * 0.00000001}\n" \
+                    f"Transactions: {wallet_info['n_tx']}"
+    await bot.send_message(call.message.chat.id, text=response)
 
 
 @bot.message_handler(func=lambda msg: True)
