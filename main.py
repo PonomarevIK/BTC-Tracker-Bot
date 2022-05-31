@@ -1,18 +1,23 @@
+import logging
+import asyncio
+import httpx
+import re
+
 from telebot.async_telebot import AsyncTeleBot
 from telebot.asyncio_storage import StatePickleStorage
 from telebot import asyncio_filters
 import telebot.types
 
-import asyncio
-import httpx
-import re
-
 with open("token.txt", "r") as token:
     TOKEN = token.read()
+
+logging.basicConfig(filename="logs.log", level=logging.ERROR)
+logger = logging.getLogger("TeleBot")
 
 bot = AsyncTeleBot(TOKEN, state_storage=StatePickleStorage("Storage/storage.pkl"))
 bot.add_custom_filter(asyncio_filters.StateFilter(bot))
 bot.add_custom_filter(asyncio_filters.TextStartsFilter())
+bot.add_custom_filter(asyncio_filters.IsDigitFilter())
 
 icons = {
     "wallet": "💼",
@@ -28,7 +33,8 @@ btns = {
     "set_wallet": telebot.types.InlineKeyboardButton("Set new wallet", callback_data="set_new_wallet"),
 }
 keyboards = {
-    "menu" : telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1).add(btns["wallet"], btns["start_tracking"]),
+    "menu": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1).add(btns["wallet"],
+                                                                                     btns["start_tracking"]),
     "tracking": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True).add(btns["stop_tracking"]),
     "wallet_query": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True).add(btns["cancel"]),
     "set_wallet": telebot.types.InlineKeyboardMarkup().add(btns["set_wallet"])
@@ -40,6 +46,7 @@ async def get_json_response(url):
         request = await client.get(url)
     if request.status_code == httpx.codes.OK:
         return request.json()
+    logger.error(f"Could not reach {url}. Error code {request.status_code}")
     return None
 
 
@@ -49,8 +56,14 @@ async def get_block_height() -> int:
 
 
 async def tracker(chat_id, user_id, wallet):
-    wallet_info = await get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")
+    if (wallet_info := await get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")) is None:
+        await bot.set_state(user_id, "menu")
+        await bot.send_message(chat_id, text="Could not reach blockchain.info API", reply_markup=keyboards["menu"])
+        return
     last_tx = wallet_info["txs"][0]
+    async with bot.retrieve_data(user_id) as data:
+        required_confirmations = data.get["confirmations"] or 2
+
     if last_tx["block_height"] is None:
         tx_hash = last_tx["hash"]
         prev_confirmations = 0
@@ -59,22 +72,19 @@ async def tracker(chat_id, user_id, wallet):
         while await bot.get_state(user_id) == "tracking":
             if (tx_info := await get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
                 pass
-
             elif (tx_block_height := tx_info["block_height"]) is None:
                 pass
-
             elif (confirmations := await get_block_height() - tx_block_height + 1) == prev_confirmations:
                 pass
-
             else:
                 prev_confirmations = confirmations
-                if confirmations == 2:
+                if confirmations >= required_confirmations:
                     await bot.send_message(chat_id, text="Transaction confirmed!", reply_markup=keyboards["menu"])
                     await bot.set_state(user_id, "menu")
-
                 else:
                     await bot.send_message(chat_id, f"Confirmations: {confirmations}")
-            await asyncio.sleep(20)
+
+            await asyncio.sleep(30)
     else:
         await bot.send_message(chat_id, text="No unconfirmed transactions found", reply_markup=keyboards["menu"])
         await bot.set_state(user_id, "menu")
@@ -84,8 +94,15 @@ async def tracker(chat_id, user_id, wallet):
 @bot.message_handler(commands=["start"])
 async def welcome(msg):
     await bot.set_state(msg.from_user.id, "menu")
-    await bot.reset_data(msg.from_user.id)
-    await bot.send_message(msg.chat.id, text="Waddup", reply_markup=keyboards["menu"])
+    await bot.send_message(msg.chat.id, text="Hello", reply_markup=keyboards["menu"])
+
+
+@bot.message_handler(commands=["debug"])
+async def debug(msg):
+    async with bot.retrieve_data(msg.from_user.id) as data:
+        state = await bot.get_state(msg.from_user.id)
+        print(f"DEBUG INFO\nUser state: {state}\nUser Data: {data}")
+    await bot.delete_message(msg.chat.id, msg.message_id)
 
 
 @bot.message_handler(text_startswith=icons["cancel"])
@@ -101,22 +118,20 @@ async def btn_wallet(msg):
             response = "BTC wallet is not set"
         else:
             response = f"BTC Wallet:\n{wallet}\n\n"
-            async with httpx.AsyncClient() as client:
-                wallet_info_request = await client.get(f"https://blockchain.info/rawaddr/{wallet}?limit=1")
-                if wallet_info_request.status_code == httpx.codes.OK:
-                    wallet_info = wallet_info_request.json()
-                    response += f"Balance: {wallet_info['final_balance'] * 0.00000001}\n"
-                    response += f"Transactions: {wallet_info['n_tx']}"
-                else:
-                    response += "Could not find wallet info online"
-
+            if (wallet_info_request := await get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")) is None:
+                response += "Could not find wallet info online"
+            else:
+                wallet_info = wallet_info_request.json()
+                response += f"Balance: {wallet_info['final_balance'] * 0.00000001}\n"
+                response += f"Transactions: {wallet_info['n_tx']}"
     await bot.send_message(msg.chat.id, text=response, reply_markup=keyboards["set_wallet"])
 
 
 @bot.message_handler(text_startswith=icons["start_tracking"])
 async def btn_start_tracking(msg):
     if await bot.get_state(msg.from_user.id) != "menu":
-        await bot.send_message(msg.chat.id, text="Another action is currently being executed")
+        await bot.send_message(msg.chat.id, text="Another action is being executed.\nReturning to main menu.", reply_markup=keyboards["menu"])
+        await bot.set_state(msg.from_user.id, "menu")
         return
     async with bot.retrieve_data(msg.from_user.id) as data:
         if data.get("wallet") is None:
@@ -124,13 +139,25 @@ async def btn_start_tracking(msg):
             return
         await bot.set_state(msg.from_user.id, "tracking")
         await bot.send_message(msg.chat.id, text="Looking for unconfirmed transactions...", reply_markup=keyboards["tracking"])
-        await tracker(msg.chat.id, msg.from_user.id, data["wallet"])
+        if data.get("confirmations") is None:
+            await bot.send_message(msg.chat.id, text="Default number of required confirmations is *2*.\nSend any number during tracking to change that.", parse_mode="Markdown")
+    await tracker(msg.chat.id, msg.from_user.id, data["wallet"])
 
 
-@bot.message_handler(text_startswith=icons["stop_tracking"])
+@bot.message_handler(state="tracking", text_startswith=icons["stop_tracking"])
 async def btn_stop_tracking(msg):
     await bot.set_state(msg.from_user.id, "menu")
     await bot.send_message(msg.chat.id, text="TX tracking cancelled", reply_markup=keyboards["menu"])
+
+
+@bot.message_handler(state="tracking", isdigit=True)
+async def set_required_confirmation_count(msg):
+    confirmations = int(msg.text)
+    if 1 > confirmations > 10:
+        await bot.send_message(msg.chat.id, text="You can't use this number")
+        return
+    await bot.add_data(msg.from_user.id, confirmations=confirmations)
+    await bot.send_message(msg.chat.id, "Preferred confirmation count updated")
 
 
 @bot.message_handler(state="wallet_query")
@@ -147,7 +174,8 @@ async def set_new_wallet(msg):
 @bot.callback_query_handler(func=lambda call: call.data == "set_new_wallet")
 async def set_new_wallet_button(call):
     if await bot.get_state(call.from_user.id) != "menu":
-        await bot.send_message(call.message.chat.id, text="Another action is currently being executed")
+        await bot.send_message(call.message.chat.id, text="Another action is being executed.\nReturning to main menu.", reply_markup=keyboards["menu"])
+        await bot.set_state(call.from_user.id, "menu")
         return
     await bot.send_message(call.message.chat.id, text="Enter new wallet address", reply_markup=keyboards["wallet_query"])
     await bot.set_state(call.from_user.id, "wallet_query")
@@ -155,8 +183,10 @@ async def set_new_wallet_button(call):
 
 @bot.message_handler(func=lambda msg: True)
 async def delete_unrecognized(msg):
+    if await bot.get_state(msg.from_user.id) is None:
+        await bot.set_state(msg.from_user.id, "menu")
     await bot.delete_message(msg.chat.id, msg.message_id)
 
 
 if __name__ == '__main__':
-    asyncio.run(bot.polling())
+    asyncio.run(bot.infinity_polling())
