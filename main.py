@@ -130,9 +130,14 @@ async def btn_wallet(msg):
             response = f"BTC Wallet:\n{wallet}"
     await bot.send_message(msg.chat.id, text=response, reply_markup=keyboards["set_wallet"])
 
+
 @bot.message_handler(text_startswith=icons["settings"])
 async def btn_settings(msg):
-    await bot.send_message(msg.chat.id, text="Default number of required confirmations is 2\nEnter a number between 1 and 10 to change that", reply_markup=keyboards["query"])
+    async with bot.retrieve_data(msg.from_user.id) as data:
+        confirmations = data.get("confirmations") or 2
+    message = f"Confirmations needed before transactions is considered confirmed: *{confirmations}*." \
+              f"\nSend a number between 1 and 10 to change that."
+    await bot.send_message(msg.chat.id, text=message, reply_markup=keyboards["query"], parse_mode="Markdown")
     await bot.set_state(msg.from_user.id, "settings_query")
 
 
