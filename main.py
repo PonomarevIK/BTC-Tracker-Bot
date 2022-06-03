@@ -153,7 +153,7 @@ async def btn_start_tracking(msg):
     await tracker(msg.chat.id, msg.from_user.id, wallet, confirmations)
 
 
-@bot.message_handler(text_startswith=icons["stop_tracking"])
+@bot.message_handler(text_startswith=icons["stop_tracking"], state="tracking")
 async def btn_stop_tracking(msg):
     await bot.set_state(msg.from_user.id, "menu")
     await bot.send_message(msg.chat.id, text="Please wait...", reply_markup=telebot.types.ReplyKeyboardRemove())
@@ -202,11 +202,16 @@ async def check_balance(call):
     await bot.send_message(call.message.chat.id, text=response)
 
 
+@bot.message_handler(func=lambda msg: msg.text[0] in icons.values())
+async def wrong_command(msg):
+    await bot.set_state(msg.from_user.id, "menu")
+    await bot.send_message(msg.chat.id, text="Invalid command.\nGoing back to menu...",
+                           reply_markup=keyboards["menu"])
+
+
 @bot.message_handler(func=lambda msg: True)
 async def delete_unrecognized(msg):
-    await bot.set_state(msg.from_user.id, "menu")
-    await bot.send_message(msg.chat.id, text="Invalid command/value\nGoing back to menu...",
-                           reply_markup=keyboards["menu"])
+    await bot.delete_message(msg.chat.id, msg.message_id)
 
 
 if __name__ == '__main__':
