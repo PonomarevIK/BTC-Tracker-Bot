@@ -88,16 +88,17 @@ async def tracker(chat_id, user_id, wallet):
     tx_hash = wallet_info["txs"][0]["hash"]
     await bot.send_message(chat_id, text=f"Unconfirmed transaction {tx_hash} found")
 
-    while await bot.get_state(user_id) == "tracking":
-        await asyncio.sleep(20)
-        if (tx_info := await HTTPSession.get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
-            continue
-        if tx_info["block_height"] is None:
-            continue
-        await back_to_menu("Transaction confirmed!")
-        return
+    aioschedule.every(30).seconds.do(poke_blockchain, chat_id, user_id, tx_hash).tag(user_id)
 
-    await bot.send_message(chat_id, text="Transaction tracking cancelled", reply_markup=keyboards["menu"])
+
+async def poke_blockchain(chat_id, user_id, tx_hash):
+    if (tx_info := await HTTPSession.get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
+        return
+    if tx_info["block_height"] is None:
+        return
+    await bot.send_message(chat_id, text="Transaction confirmed!", reply_markup=keyboards["menu"])
+    await bot.set_state(user_id, "menu")
+    aioschedule.clear(user_id)
 
 
 # MESSAGE HANDLERS
@@ -110,6 +111,7 @@ async def welcome(msg):
 
 @bot.message_handler(text_startswith=icons["cancel"])
 async def btn_cancel(msg):
+    aioschedule.clear(msg.from_user.id)
     await bot.set_state(msg.from_user.id, "menu")
     await bot.send_message(msg.chat.id, text=icons["cancel"], reply_markup=keyboards["menu"])
 
@@ -144,8 +146,9 @@ async def btn_start_tracking(msg):
 
 @bot.message_handler(text_startswith=icons["stop_tracking"], state="tracking")
 async def btn_stop_tracking(msg):
+    aioschedule.clear(msg.from_user.id)
     await bot.set_state(msg.from_user.id, "menu")
-    await bot.send_message(msg.chat.id, text="Please wait...", reply_markup=telebot.types.ReplyKeyboardRemove())
+    await bot.send_message(msg.chat.id, text="Tracking canceled", reply_markup=keyboards["menu"])
 
 
 @bot.message_handler(state="wallet_query")
