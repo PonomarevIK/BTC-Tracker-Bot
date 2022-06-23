@@ -20,6 +20,8 @@ bot = AsyncTeleBot(TOKEN, state_storage=StatePickleStorage("Storage/storage.pkl"
 bot.add_custom_filter(asyncio_filters.StateFilter(bot))
 bot.add_custom_filter(asyncio_filters.TextStartsFilter())
 
+aioscheduler = aioschedule.Scheduler()
+
 icons = {
     "wallet": "💼",
     "cancel": "🔙",
@@ -37,7 +39,7 @@ btns = {
     "check_balance": telebot.types.InlineKeyboardButton("Check balance", callback_data="check_balance"),
 }
 keyboards = {
-    "menu": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2).add(btns["wallet"], btns["settings"], btns["start_tracking"]),
+    "menu": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1).add(btns["wallet"], btns["start_tracking"]),
     "tracking": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True).add(btns["stop_tracking"]),
     "query": telebot.types.ReplyKeyboardMarkup(resize_keyboard=True).add(btns["cancel"]),
     "wallet": telebot.types.InlineKeyboardMarkup(row_width=1).add(btns["set_wallet"], btns["check_balance"]),
@@ -63,42 +65,48 @@ class HTTPSession:
         return None
 
 
-async def get_block_height() -> int:
-    """Returns index of the last block on the blockchain"""
-    wallet_request = await HTTPSession.get_json_response("https://blockchain.info/q/getblockcount")
-    print("Block height: ", wallet_request)
-    return int(wallet_request)
+# async def get_block_height() -> int:
+#     """Returns index of the last block on the blockchain"""
+#     wallet_request = await HTTPSession.get_json_response("https://blockchain.info/q/getblockcount")
+#     print("Block height: ", wallet_request)
+#     return int(wallet_request)
 
 
-async def tracker(chat_id, user_id, wallet):
-    """Accesses blockchain.info API in a loop to check for updates on the last transaction on user's wallet"""
-    async def back_to_menu(message):
-        await bot.send_message(chat_id, text=message, reply_markup=keyboards["menu"])
-        await bot.set_state(user_id, "menu")
+async def return_to_menu(chat_id, user_id, message):
+    """ Sends a message and resets user's state back to 'menu' """
+    await bot.send_message(chat_id, text=message, reply_markup=keyboards["menu"])
+    await bot.set_state(user_id, "menu")
 
+
+async def start_tracking(chat_id, user_id, wallet):
+    """Looks for an unconfirmed transaction. If found schedules poke_blockchain() for every 30 seconds"""
     await bot.send_message(chat_id, text="Looking for a transaction to track...", reply_markup=keyboards["tracking"])
 
     if (wallet_info := await HTTPSession.get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")) is None:
-        await back_to_menu("Could not reach blockchain.info API")
+        await return_to_menu(chat_id, user_id, "Could not reach blockchain.info API")
         return
     if wallet_info["txs"][0]["block_height"] is not None:
-        await back_to_menu("No unconfirmed transactions found")
+        await return_to_menu(chat_id, user_id, "No unconfirmed transactions found")
         return
 
     tx_hash = wallet_info["txs"][0]["hash"]
     await bot.send_message(chat_id, text=f"Unconfirmed transaction {tx_hash} found")
 
-    aioschedule.every(30).seconds.do(poke_blockchain, chat_id, user_id, tx_hash).tag(user_id)
+    aioscheduler.every(30).seconds.do(poke_blockchain, chat_id, user_id, tx_hash).tag(user_id)
 
 
 async def poke_blockchain(chat_id, user_id, tx_hash):
+    """Is repeatedly called to check if transaction with specified tx_hash got at least one confirmation"""
     if (tx_info := await HTTPSession.get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
+        return
+    if tx_info["double_spend"]:
+        await return_to_menu(chat_id, user_id, "Transaction invalid: double spend")
+        aioscheduler.clear(user_id)
         return
     if tx_info["block_height"] is None:
         return
-    await bot.send_message(chat_id, text="Transaction confirmed!", reply_markup=keyboards["menu"])
-    await bot.set_state(user_id, "menu")
-    aioschedule.clear(user_id)
+    aioscheduler.clear(user_id)
+    await return_to_menu(chat_id, user_id, "Transaction confirmed!")
 
 
 # MESSAGE HANDLERS
@@ -111,7 +119,7 @@ async def welcome(msg):
 
 @bot.message_handler(text_startswith=icons["cancel"])
 async def btn_cancel(msg):
-    aioschedule.clear(msg.from_user.id)
+    aioscheduler.clear(msg.from_user.id)
     await bot.set_state(msg.from_user.id, "menu")
     await bot.send_message(msg.chat.id, text=icons["cancel"], reply_markup=keyboards["menu"])
 
@@ -141,12 +149,12 @@ async def btn_start_tracking(msg):
             await bot.send_message(msg.chat.id, text="No wallet", reply_markup=keyboards["set_wallet"])
             return
     await bot.set_state(msg.from_user.id, "tracking")
-    await tracker(msg.chat.id, msg.from_user.id, wallet)
+    await start_tracking(msg.chat.id, msg.from_user.id, wallet)
 
 
 @bot.message_handler(text_startswith=icons["stop_tracking"], state="tracking")
 async def btn_stop_tracking(msg):
-    aioschedule.clear(msg.from_user.id)
+    aioscheduler.clear(msg.from_user.id)
     await bot.set_state(msg.from_user.id, "menu")
     await bot.send_message(msg.chat.id, text="Tracking canceled", reply_markup=keyboards["menu"])
 
@@ -194,7 +202,7 @@ async def delete_unrecognized(msg):
 
 async def scheduler():
     while True:
-        await aioschedule.run_pending()
+        await aioscheduler.run_pending()
         await asyncio.sleep(1)
 
 
