@@ -1,6 +1,6 @@
 import logging
 import asyncio
-import aioschedule
+
 import aiohttp
 import re
 
@@ -19,8 +19,6 @@ logger = logging.getLogger("TeleBot")
 bot = AsyncTeleBot(TOKEN, state_storage=StatePickleStorage("Storage/storage.pkl"))
 bot.add_custom_filter(asyncio_filters.StateFilter(bot))
 bot.add_custom_filter(asyncio_filters.TextStartsFilter())
-
-aioscheduler = aioschedule.Scheduler()
 
 icons = {
     "wallet": "💼",
@@ -79,7 +77,7 @@ async def return_to_menu(chat_id, user_id, message):
 
 
 async def start_tracking(chat_id, user_id, wallet):
-    """Looks for an unconfirmed transaction. If found schedules poke_blockchain() for every 30 seconds"""
+    """Looks for an unconfirmed transaction. If found calls poke_blockchain()"""
     await bot.send_message(chat_id, text="Looking for a transaction to track...", reply_markup=keyboards["tracking"])
 
     if (wallet_info := await HTTPSession.get_json_response(f"https://blockchain.info/rawaddr/{wallet}?limit=1")) is None:
@@ -92,21 +90,23 @@ async def start_tracking(chat_id, user_id, wallet):
     tx_hash = wallet_info["txs"][0]["hash"]
     await bot.send_message(chat_id, text=f"Unconfirmed transaction {tx_hash} found")
 
-    aioscheduler.every(30).seconds.do(poke_blockchain, chat_id, user_id, tx_hash).tag(user_id)
+    await poke_blockchain(chat_id, user_id, tx_hash)
 
 
 async def poke_blockchain(chat_id, user_id, tx_hash):
-    """Is repeatedly called to check if transaction with specified tx_hash got at least one confirmation"""
-    if (tx_info := await HTTPSession.get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
+    """Repeatedly checks if transaction with specified tx_hash got at least one confirmation every 30 seconds"""
+    while await bot.get_state(user_id) == "tracking":
+        await asyncio.sleep(30)
+        if (tx_info := await HTTPSession.get_json_response(f"https://blockchain.info/rawtx/{tx_hash}")) is None:
+            continue
+        if tx_info["double_spend"]:
+            await return_to_menu(chat_id, user_id, "Transaction invalid: double spend")
+            return
+        if tx_info["block_height"] is None:
+            continue
+        await return_to_menu(chat_id, user_id, "Transaction confirmed!")
         return
-    if tx_info["double_spend"]:
-        await return_to_menu(chat_id, user_id, "Transaction invalid: double spend")
-        aioscheduler.clear(user_id)
-        return
-    if tx_info["block_height"] is None:
-        return
-    aioscheduler.clear(user_id)
-    await return_to_menu(chat_id, user_id, "Transaction confirmed!")
+    await return_to_menu(chat_id, user_id, "Tracking cancelled")
 
 
 # MESSAGE HANDLERS
@@ -119,7 +119,6 @@ async def welcome(msg):
 
 @bot.message_handler(text_startswith=icons["cancel"])
 async def btn_cancel(msg):
-    aioscheduler.clear(msg.from_user.id)
     await bot.set_state(msg.from_user.id, "menu")
     await bot.send_message(msg.chat.id, text=icons["cancel"], reply_markup=keyboards["menu"])
 
@@ -154,9 +153,8 @@ async def btn_start_tracking(msg):
 
 @bot.message_handler(text_startswith=icons["stop_tracking"], state="tracking")
 async def btn_stop_tracking(msg):
-    aioscheduler.clear(msg.from_user.id)
     await bot.set_state(msg.from_user.id, "menu")
-    await bot.send_message(msg.chat.id, text="Tracking canceled", reply_markup=keyboards["menu"])
+    await bot.send_message(msg.chat.id, text="Please wait...")
 
 
 @bot.message_handler(state="wallet_query")
@@ -200,15 +198,5 @@ async def delete_unrecognized(msg):
     await bot.delete_message(msg.chat.id, msg.message_id)
 
 
-async def scheduler():
-    while True:
-        await aioscheduler.run_pending()
-        await asyncio.sleep(1)
-
-
-async def main():
-    await asyncio.gather(bot.infinity_polling(), scheduler())
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(bot.infinity_polling())
